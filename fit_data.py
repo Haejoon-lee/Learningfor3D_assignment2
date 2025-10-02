@@ -9,9 +9,7 @@ from pytorch3d.ops import sample_points_from_meshes
 from pytorch3d.structures import Meshes
 import dataset_location
 import torch
-
-
-
+from visualizations import *
 
 
 
@@ -26,12 +24,14 @@ def get_args_parser():
     parser.add_argument('--device', default='cuda', type=str) 
     return parser
 
-def fit_mesh(mesh_src, mesh_tgt, args):
+def fit_mesh(mesh_src, mesh_tgt, args, output_dir=None):
     start_iter = 0
     start_time = time.time()
 
     deform_vertices_src = torch.zeros(mesh_src.verts_packed().shape, requires_grad=True, device='cuda')
     optimizer = torch.optim.Adam([deform_vertices_src], lr = args.lr)
+    loss_history = []
+    
     print("Starting training !")
     for step in range(start_iter, args.max_iter):
         iter_start_time = time.time()
@@ -54,18 +54,27 @@ def fit_mesh(mesh_src, mesh_tgt, args):
         iter_time = time.time() - iter_start_time
 
         loss_vis = loss.cpu().item()
+        loss_history.append(loss_vis)
 
         print("[%4d/%4d]; ttime: %.0f (%.2f); loss: %.3f" % (step, args.max_iter, total_time,  iter_time, loss_vis))        
     
     mesh_src.offset_verts_(deform_vertices_src)
 
+    # Save loss curve
+    if output_dir:
+        save_loss_curve(loss_history, os.path.join(output_dir, f"mesh_loss_curve_{args.max_iter}iter.png"))
+    else:
+        save_loss_curve(loss_history, f"mesh_loss_curve_{args.max_iter}iter.png")
     print('Done!')
+    return loss_history
 
 
-def fit_pointcloud(pointclouds_src, pointclouds_tgt, args):
+def fit_pointcloud(pointclouds_src, pointclouds_tgt, args, output_dir=None):
     start_iter = 0
     start_time = time.time()    
     optimizer = torch.optim.Adam([pointclouds_src], lr = args.lr)
+    loss_history = []
+    
     for step in range(start_iter, args.max_iter):
         iter_start_time = time.time()
 
@@ -79,16 +88,25 @@ def fit_pointcloud(pointclouds_src, pointclouds_tgt, args):
         iter_time = time.time() - iter_start_time
 
         loss_vis = loss.cpu().item()
+        loss_history.append(loss_vis)
 
         print("[%4d/%4d]; ttime: %.0f (%.2f); loss: %.3f" % (step, args.max_iter, total_time,  iter_time, loss_vis))
     
+    # Save loss curve
+    if output_dir:
+        save_loss_curve(loss_history, os.path.join(output_dir, f"pointcloud_loss_curve_{args.max_iter}iter.png"))
+    else:
+        save_loss_curve(loss_history, f"pointcloud_loss_curve_{args.max_iter}iter.png")
     print('Done!')
+    return loss_history
 
 
-def fit_voxel(voxels_src, voxels_tgt, args):
+def fit_voxel(voxels_src, voxels_tgt, args, output_dir=None):
     start_iter = 0
     start_time = time.time()    
     optimizer = torch.optim.Adam([voxels_src], lr = args.lr)
+    loss_history = []
+    
     for step in range(start_iter, args.max_iter):
         iter_start_time = time.time()
 
@@ -102,13 +120,37 @@ def fit_voxel(voxels_src, voxels_tgt, args):
         iter_time = time.time() - iter_start_time
 
         loss_vis = loss.cpu().item()
+        loss_history.append(loss_vis)
 
         print("[%4d/%4d]; ttime: %.0f (%.2f); loss: %.3f" % (step, args.max_iter, total_time,  iter_time, loss_vis))
     
+    # Save loss curve
+    if output_dir:
+        save_loss_curve(loss_history, os.path.join(output_dir, f"voxel_loss_curve_{args.max_iter}iter.png"))
+    else:
+        save_loss_curve(loss_history, f"voxel_loss_curve_{args.max_iter}iter.png")
     print('Done!')
+    return loss_history
 
 
 def train_model(args):
+    # Create output directory structure
+    output_dir = "results"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create subdirectory based on fitting type
+    if args.type == "vox":
+        problem_section_dir = os.path.join(output_dir, "1_1_voxel_fitting")
+    elif args.type == "point":
+        problem_section_dir = os.path.join(output_dir, "1_2_pointcloud_fitting")
+    elif args.type == "mesh":
+        problem_section_dir = os.path.join(output_dir, "1_3_mesh_fitting")
+    else:
+        problem_section_dir = os.path.join(output_dir, "misc_fitting")
+    
+    os.makedirs(problem_section_dir, exist_ok=True)
+    print(f"Output directory: {problem_section_dir}")
+    
     r2n2_dataset = R2N2("train", dataset_location.SHAPENET_PATH, dataset_location.R2N2_PATH, dataset_location.SPLITS_PATH, return_voxels=True)
 
     
@@ -128,7 +170,15 @@ def train_model(args):
         voxels_tgt = feed_cuda['voxels']
 
         # fitting
-        fit_voxel(voxels_src, voxels_tgt, args)
+        loss_history = fit_voxel(voxels_src, voxels_tgt, args, problem_section_dir)
+        
+        # Visualization
+        print("Creating visualizations...")
+        create_voxel_visualization(voxels_src, os.path.join(problem_section_dir, "optimized_voxel_grid.png"))
+        create_voxel_visualization(voxels_tgt, os.path.join(problem_section_dir, "ground_truth_voxel_grid.png"))
+        create_comparison_visualization(voxels_src, voxels_tgt, os.path.join(problem_section_dir, "voxel_comparison.png"))
+        create_rotating_comparison_gif(voxels_src, voxels_tgt, os.path.join(problem_section_dir, "voxel_rotating_comparison.gif"))
+        print("Voxel visualizations saved!")
 
 
     elif args.type == "point":
@@ -138,7 +188,14 @@ def train_model(args):
         pointclouds_tgt = sample_points_from_meshes(mesh_tgt, args.n_points)
 
         # fitting
-        fit_pointcloud(pointclouds_src, pointclouds_tgt, args)        
+        loss_history = fit_pointcloud(pointclouds_src, pointclouds_tgt, args, problem_section_dir)
+        
+        # Visualization
+        print("Creating visualizations...")
+        create_pointcloud_visualization(pointclouds_src, os.path.join(problem_section_dir, "optimized_pointcloud.png"), color='red')
+        create_pointcloud_visualization(pointclouds_tgt, os.path.join(problem_section_dir, "ground_truth_pointcloud.png"), color='blue')
+        create_rotating_pointcloud_gif(pointclouds_src, pointclouds_tgt, os.path.join(problem_section_dir, "pointcloud_rotating_comparison.gif"))
+        print("Point cloud visualizations saved!")        
     
     elif args.type == "mesh":
         # initialization
@@ -147,11 +204,14 @@ def train_model(args):
         mesh_tgt = Meshes(verts=[feed_cuda['verts']], faces=[feed_cuda['faces']])
 
         # fitting
-        fit_mesh(mesh_src, mesh_tgt, args)        
-
-
-    
-    
+        loss_history = fit_mesh(mesh_src, mesh_tgt, args, problem_section_dir)
+        
+        # Visualization
+        print("Creating visualizations...")
+        create_mesh_visualization(mesh_src, os.path.join(problem_section_dir, "optimized_mesh.png"), color='lightcoral')
+        create_mesh_visualization(mesh_tgt, os.path.join(problem_section_dir, "ground_truth_mesh.png"), color='lightblue')
+        create_rotating_mesh_gif(mesh_src, mesh_tgt, os.path.join(problem_section_dir, "mesh_rotating_comparison.gif"))
+        print("Mesh visualizations saved!")        
 
 
 if __name__ == '__main__':
